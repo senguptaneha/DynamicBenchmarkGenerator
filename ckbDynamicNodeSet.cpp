@@ -75,8 +75,8 @@ struct edge{
 			double p_x = lambda * exp( -1* lambda * (i - endLimit));
 			cumul_prob += p_x;
 			if (z <= cumul_prob){
-                		//cout << "generateEndExp: Setting end time of " << communityId << ": " << sourceId << ", " << destId << ", " << startTime << ", " << endTime << " to " << i << endl << flush;
-                		if (i < this->startTime) i = this->startTime + 1;
+                //cout << "generateEndExp: Setting end time of " << communityId << ": " << sourceId << ", " << destId << ", " << startTime << ", " << endTime << " to " << i << endl << flush;
+                if (i < this->startTime) i = this->startTime + 1;
 				this->endTime = i;
 
 				return;
@@ -93,12 +93,14 @@ struct node{
 	int startTime;
 	int endTime;
 	double estimatedDegree;
+
 	node(int isNodeId){
 		this->nodeId = isNodeId;
 		this->startTime = 0;
 		this->endTime = -1;
 		this->estimatedDegree = 0;
 	}
+
 	node(int isNodeId, int isStartTime){
 		this->nodeId = isNodeId;
 		this->startTime = isStartTime;
@@ -124,6 +126,7 @@ struct node{
 		else delete e;  //no multi edges
 		return flag;
 	}
+
 	/*to be called on destId*/
 	edge *findReverseAliveEdge(int srcId){
 		for (int i=0;i<adj.size();i++){
@@ -137,6 +140,7 @@ struct node{
 		for (int i=0;i<communities.size();i++) cout << ", " << communities[i];
 		cout << endl << flush;
 	}
+
 	void printEdgeList(){
 		cout << "Edge list of " << nodeId << endl;
 		for (int i = 0; i < adj.size(); i++)
@@ -231,9 +235,10 @@ struct update{
 vector<node*> graph;
 vector<community*> communities;
 vector<int> nodeMemberships;
+vector<double> nodeSlots;
 vector<int> communitySizes;
 
-
+int numOrphanNodes;
 /************PROFILING QUANTITIES************************************/
 double averageSplitTime = 0.0;
 double averageMergeTime = 0.0;
@@ -247,6 +252,7 @@ int nBirths = 0;
 int nDeaths = 0;
 int nAdd = 0;
 int nDelete = 0;
+ofstream slotsFile;
 /*******************************************************************/
 
 /************************UTILITY FUNCTIONS**************************/
@@ -333,7 +339,7 @@ void generateBigraph(){
 		sizeB += communitySizes[i];
 
 	/*what do we do if sizeA and sizeB do not agree?
-	 One (and not the best) solution is to randomly 
+	 One (and not the best) solution is to randomly
 	 select a community size and change it by 1*/
 	while (sizeA > sizeB){	//increment community sizes
 		int randomIndex = rand()%N2;
@@ -380,7 +386,7 @@ void generateBigraph(){
 		}
 		else{
 		/*Attempt rewiring only if communitySize is mmin, because otherwise,
-		we will end up with constraint violating community size. 
+		we will end up with constraint violating community size.
 		We do not do rewiring otherwise*/
 		/*select a node at random that is not in this community*/
 			if (communitySizes[commIndex] == mmin){
@@ -395,7 +401,7 @@ void generateBigraph(){
 						int newCommunityId = graph[nodeId]->communities[ci];
 						int tempIndex = communities[newCommunityId]->indexOfNode(nodeIndex);
 						if (tempIndex == -1){
-							//assign nodeIndex to newCommunityId 
+							//assign nodeIndex to newCommunityId
 							graph[nodeIndex]->communities.push_back(newCommunityId);
 							(communities[newCommunityId]->nodeList).push_back(new nodeInCommunity(nodeIndex,0));
 							//remove nodeId from newCommunityId, assign nodeId to commIndex
@@ -414,11 +420,16 @@ void generateBigraph(){
 					}
 					if (x) break;
 				}
+
+
             		}
+
         	}
 	}
 	for (int i=0;i<N1;i++){
-		nodeMemberships[i] = (int) (floor(1.2*nodeMemberships[i]));
+		//nodeMemberships[i] = (int) (floor(1.2*nodeMemberships[i]));
+		nodeMemberships[i] = graph[i]->communities.size();
+		nodeSlots.push_back(1.2*nodeMemberships[i]);
 	}
 
 	maxCommSize = 0;
@@ -592,25 +603,29 @@ void deathCommunity(int commIndex, int timeslot){
 	community *c = communities[commIndex];
 	c->isAvailable = false;
 	c->nextAvailableTimeSlot = -1;
-	c->contractionTime = timeslot;
-	c->deathTime = timeslot + rand()%10 + 5; //contraction time between 5 and 14 s
+	c->deathTime = timeslot;
+	c->contractionTime = timeslot - rand()%10 + 5; //contraction time between 5 and 14 s
 	if (c->contractionTime < 0) c->contractionTime = 0;
 	int P = c->nodeList.size();
 	int coreSize = (int)(0.1*P);
 	if (coreSize < mmin) coreSize = mmin;
 	for (int i=0 ; i < c->nodeList.size() ; i++){
-        	if (c->nodeList[i]->leaveTime > -1) continue;
-		if (i < coreSize) c->nodeList[i]->leaveTime = c->contractionTime;
-		else c->nodeList[i]->leaveTime = (int) floor(c->contractionTime + (((double) i)/P)*(c->deathTime - c->contractionTime));
+        if (c->nodeList[i]->leaveTime > -1) continue;
+		if (i < coreSize) c->nodeList[i]->leaveTime = c->deathTime;
+		else c->nodeList[i]->leaveTime = (int) floor(c->deathTime - (((double) i)/P)*(c->deathTime - c->contractionTime));
 	}
 
 	for (int i=0;i<c->nodeList.size();i++){
 		int u = c->nodeList[i]->nodeId;
 		if (graph[u]->endTime > -1) continue;   //this vertex is already dead, and so has left the community
-			nodeMemberships[u] -= 1;
+        nodeMemberships[u] -= 1;
+        if (nodeMemberships[u] == 0){
+            numOrphanNodes += 1;
+            cout << "Orphaned " << u << endl;
+        }
 
 		for (int j=0; j< graph[u]->adj.size();j++){
-			if (graph[u]->adj[j]->communityId == commIndex){
+			if (graph[u]->adj[j]->communityId == commIndex && graph[u]->adj[j]->endTime == -1){
 				//generate end time with exponential
 				int p_u = i;
 				int p_v = c->indexOfNode(graph[u]->adj[j]->destId);
@@ -623,33 +638,45 @@ void deathCommunity(int commIndex, int timeslot){
 				//set end time of reverse edge here
 				int dj = graph[u]->adj[j]->destId;
 				edge *reverseEdge = graph[dj]->findReverseAliveEdge(u);
-				if ((reverseEdge)&&(reverseEdge->endTime == -1)) reverseEdge->endTime = graph[u]->adj[j]->endTime;
+				if ((reverseEdge)&&(reverseEdge->endTime == -1)&&(reverseEdge->startTime <= graph[u]->adj[j]->endTime)){
+                    reverseEdge->endTime = graph[u]->adj[j]->endTime;
+				}
 			}
 		}
 	}
 }
 
 void birthCommunity(int timeslot){
+    int includedNode = -1;
 	//draw community size
 	PowerlawDegreeSequence z(mmin,mmax,beta2);
 	z.run();
 	int commSize = z.getDegree();
+    if (commSize < mmin) return;
+    int currSize = 0;
 
+	int *res = new int[commSize];
 	//draw community members
 	double *nodeProbs = new double[N1];
 	int numCandidateNodes = 0;
 	for (int i=0;i<N1;i++){
-		nodeProbs[i] = nodeMemberships[i] - graph[i]->communities.size();
+	        /*if (currSize == commSize) break;
+	        if (nodeMemberships[i] == 0){
+        	    cout << "Including " << i << " at " << timeslot << endl;
+        	    includedNode = i;
+        	    res[currSize++] = i;
+        	    nodeProbs[i] = 0;
+        	}
+        	else */nodeProbs[i] = nodeSlots[i] - nodeMemberships[i];
+
 		if (nodeProbs[i] <= 0) nodeProbs[i] = 0;
 		else numCandidateNodes += 1;
 	}
 
 	//normalize nodeProbs
-	if (numCandidateNodes < commSize) return;   //could not birth community
+	if (numCandidateNodes < commSize) return;   //could not birth community - not enough nodes available
 	double sumNodeProbs = 0;
 	for (int i=0;i<N1;i++) sumNodeProbs += nodeProbs[i];
-	for (int i=0;i<N1;i++) nodeProbs[i] /= sumNodeProbs;
-	//for (int i=1;i<N1;i++) nodeProbs[i] += nodeProbs[i-1];
 
 	int commIndex = communities.size();
 	//cout << "Birthing community " << commIndex << " at " << timeslot << endl;
@@ -659,53 +686,30 @@ void birthCommunity(int timeslot){
 	community *c = communities[commIndex];
 	c->birthTime = timeslot;
 	c->expansionTime = timeslot + rand()%10 + 5; //contraction time between 5 and 14 s
-	int currSize = 0;
-	bool *nodeSelected = new bool[N1];  //keeps track of which nodes have been selected in the community
-	for (int i=0;i<N1;i++) nodeSelected[i] = false;
 
-	int *res = new int[commSize];
-	double *keys = new double[N1];
-	for (int i=0;i<N1;i++){
-		if (nodeProbs[i]==0) continue;
-		double r = ((double) rand())/((double) RAND_MAX);
-		keys[i] = pow(r,nodeProbs[i]);
-	}
-	double minValue = 1;
-	int minIndex = -1;
-	int i;
-	for (i=0;i<N1;i++){
-		if (currSize == commSize) break;
-		if (nodeProbs[i] > 0){
-			res[currSize] = i;
 
-			if (minValue >= keys[i]){
-				minValue = keys[i];
-				minIndex = currSize;
-			}
-			currSize += 1;
-		}
+
+	while (currSize < commSize){
+        double r = ((double) rand())/((double) RAND_MAX) * sumNodeProbs;
+        double sumTemp = 0;
+        for (int i = 0; i < N1; i++){
+            sumTemp += nodeProbs[i];
+            if (sumTemp >= r){
+                res[currSize] = i;
+                sumNodeProbs -= nodeProbs[i];
+
+                nodeProbs[i] = 0;
+                break;
+            }
+        }
+        currSize += 1;
 	}
 
-	for (;i<N1;i++){
-		if (nodeProbs[i]>0){
-			if (keys[i] > minValue){
-				res[minIndex] = i;
-				minValue = 1;
-				minIndex = -1;
-				for (int j=0;j<commSize;j++){
-					if (minValue >= keys[res[j]]){
-						minValue = keys[res[j]];
-						minIndex = j;
-					}
-				}
-			}
-		}
-	}
-	if (commSize < mmin) return;
 
-	for (i=0;i<commSize;i++){
+	for (int i=0;i<commSize;i++){
 		c->nodeList.push_back(new nodeInCommunity(res[i]));
 		graph[res[i]]->communities.push_back(commIndex);
+		nodeMemberships[res[i]] += 1;
 	}
 
 
@@ -731,7 +735,8 @@ void birthCommunity(int timeslot){
 	// create edges
 	int curr = 1;
 	int next = -1;
-	c->nextAvailableTimeSlot = -1;
+	c->nextAvailableTimeSlot = c->expansionTime;
+	cout << "Birth community: " << c->expansionTime << endl;
 	while (curr < numberOfNodes) {
 		// compute new step length
 		next += get_next_edge_distance(log_cp);
@@ -745,15 +750,13 @@ void birthCommunity(int timeslot){
 		if (curr < numberOfNodes) {
 			int a = nodesInCommunity[curr];
 			int b = nodesInCommunity[next];
-			bool flag = true;
-			for (int l=0;l < graph[a]->adj.size();l++){
-				if ((graph[a]->adj[l])->destId == b){
-					flag = false;
-					break;
-				}
-			}
-			if (!flag) continue;
 			edge *fwd = new edge(a,b,commIndex);
+			bool flag = graph[a]->addEdge(fwd);
+			if (!flag) continue;
+			edge *bwd = new edge(b,a,-1);    //communityId = -1 for a reverse edge
+			bwd->startTime = timeslot;
+			flag = graph[b]->addEdge(bwd);
+
 			//generate start time
 			int p_u = c->indexOfNode(a);
 			int p_v = c->indexOfNode(b);
@@ -762,6 +765,8 @@ void birthCommunity(int timeslot){
 			int maxJoinTime = uJoinTime;
 			if (maxJoinTime < vJoinTime) maxJoinTime = vJoinTime;
 			int startLimit = maxJoinTime;
+			fwd->generateStartExp(startLimit);
+			bwd->startTime = fwd->startTime;
 		}
 	}
 	//mark busy
@@ -850,7 +855,7 @@ void splitCommunity(int commIndex, int timeslot){
 	community *c2 = communities[c2Index];
 	c2->originFlag = 1;
 	c2->isAvailable = false;
-	//cout << "Splitting community " << commIndex << ", of size = " << c->nodeList.size() << ", into " << c1Index << " and " << c2Index << " at " << timeslot << ", originFlag = " << c->originFlag << endl << flush;
+	cout << "Splitting community " << commIndex << ", of size = " << c->nodeList.size() << ", into " << c1Index << " and " << c2Index << " at " << timeslot << ", originFlag = " << c->originFlag << endl << flush;
 
 	int *leaveTimes = new int[c->nodeList.size()];
 	int numNodesInvolved = 0;
@@ -880,7 +885,7 @@ void splitCommunity(int commIndex, int timeslot){
 	for (int i=0;i<=splitBorder;i++){	//for all nodes in c1
 		int u = c->nodeList[i]->nodeId;
 		for (int j=0;j<graph[u]->adj.size();j++){
-			if (graph[u]->adj[j]->communityId != commIndex) continue;    //is a different edge, no need to generate end time
+			if (graph[u]->adj[j]->communityId != commIndex || graph[u]->adj[j]->endTime != -1) continue;    //is a different edge, no need to generate end time
 
 			int v = graph[u]->adj[j]->destId;
 			if (graph[v]->endTime > -1) continue;
@@ -888,7 +893,7 @@ void splitCommunity(int commIndex, int timeslot){
 			if (indexOfv > splitBorder){	//if v is in c2
 				int endLimit = (int) floor(0.5*leaveTimes[i] + 0.5*leaveTimes[indexOfv]);
 				if (endLimit < timeslot){
-					cout << "1.Now this problem is there!" << endl; 
+					cout << "1.Now this problem is there!" << endl;
 				}
 				graph[u]->adj[j]->generateEndExp(endLimit);
 				//set endTime of reverse edge here
@@ -903,11 +908,12 @@ void splitCommunity(int commIndex, int timeslot){
 			else graph[u]->adj[j]->communityId = c1Index;
 		}
 	}
-	/*This loop is required because we are checking if the edge processed has community id = commIndex*/
+	/*This loop is required because we are checking if the edge processed has community id = commIndex, so reverse edges
+	will not be processed in the previous one.*/
 	for (int i=splitBorder+1;i<numNodesInvolved;i++){	//for all nodes in c2
 		int u = c->nodeList[i]->nodeId;
 		for (int j=0;j<graph[u]->adj.size();j++){
-			if (graph[u]->adj[j]->communityId != commIndex) continue;    //is a different edge, no need to generate end time
+			if (graph[u]->adj[j]->communityId != commIndex || graph[u]->adj[j]->endTime != -1) continue;    //is a different edge, no need to generate end time
 			int v = graph[u]->adj[j]->destId;
 			if (graph[v]->endTime > -1) continue;   //v is already dead
 			int indexOfv = c->indexOfNode(v);
@@ -920,8 +926,9 @@ void splitCommunity(int commIndex, int timeslot){
 				//set end time of reverse edge here
 				int dj = graph[u]->adj[j]->destId;
 				edge *reverseEdge = graph[dj]->findReverseAliveEdge(u);
-				if ((reverseEdge)&&(reverseEdge->endTime==-1)) 
+				if ((reverseEdge)&&(reverseEdge->endTime==-1))
 					reverseEdge->endTime = graph[u]->adj[j]->endTime;
+
 				if (maxEndTime < graph[u]->adj[j]->endTime) maxEndTime = graph[u]->adj[j]->endTime;
 			}
 			else graph[u]->adj[j]->communityId = c2Index;
@@ -931,6 +938,7 @@ void splitCommunity(int commIndex, int timeslot){
 	c1->birthTime = timeslot + 1;
 	c2->birthTime = timeslot + 1;
 	c->deathTime = timeslot;
+    cout << "Split community: " << maxEndTime + 1 << endl;
 	c1->nextAvailableTimeSlot = maxEndTime+1;
 	c2->nextAvailableTimeSlot = maxEndTime+1;
 	generateEdgesForSplitCommunity(c1Index,timeslot);
@@ -940,19 +948,23 @@ void splitCommunity(int commIndex, int timeslot){
 }
 
 void mergeCommunities(int c1Index, int c2Index, int timeslot){
+
 	community *c1 = communities[c1Index];
 	community *c2 = communities[c2Index];
+
 
 	c1->isAvailable = false;
 	c1->nextAvailableTimeSlot = -1; //community dead, will never be available again
 	c1->deletionFlag = 2;
+
 	c2->isAvailable = false;
 	c2->nextAvailableTimeSlot = -1;
 	c2->deletionFlag = 2;
+
 	int cIndex = communities.size();
 	communities.push_back(new community());
 	community *c = communities[cIndex];
-	//cout << "Merging communities " << c1Index << " and " << c2Index << " into " << cIndex << " at " << timeslot << endl;
+	cout << "Merging communities " << c1Index << " and " << c2Index << " into " << cIndex << " at " << timeslot << endl;
 	//cout << "N2 = " << N2 << endl << flush;
 	c->originFlag = 2;
 	c->isAvailable = false;
@@ -990,28 +1002,35 @@ void mergeCommunities(int c1Index, int c2Index, int timeslot){
 		//cout << "Inserted " << u << " to c1" << endl;
 	}
 
-	/*number of edges to be inserted between nodes of c1 and c2
-	* depends on the balance number of edges that remains from 
+	/*number of edges to be inserted between nodes of erstwhile c1 and c2
+	* depends on the balance number of edges that remains from
 	* the required number in c minus the existing number in c1 + c2*/
+
 	int maxStartTime=0;
 	int numberOfNodes = c->nodeList.size();
 	double prob = alpha/pow(numberOfNodes, gamma_1);
+
 	double m1 = 0, m2 = 0, m = prob*(numberOfNodes)*(numberOfNodes-1)*0.5;
-	for (int i=0; i< c1->nodeList.size();i++)
-		for (int j=0;j<graph[i]->adj.size();j++)
-			if (graph[i]->adj[j]->communityId == c1Index){
+	for (int i=0; i< c1->nodeList.size();i++){
+        int c1u = c1->nodeList[i]->nodeId;	//bug was here
+		for (int j=0;j<graph[c1u]->adj.size();j++)
+			if (graph[c1u]->adj[j]->communityId == c1Index){
 				m1 += 1;
-				graph[i]->adj[j]->communityId = cIndex;
+				graph[c1u]->adj[j]->communityId = cIndex;
 			}
-	for (int i=0; i< c2->nodeList.size();i++)
-		for (int j=0;j<graph[i]->adj.size();j++)
-			if (graph[i]->adj[j]->communityId == c2Index){
+    }
+	for (int i=0; i< c2->nodeList.size();i++){
+        int c2u = c2->nodeList[i]->nodeId;
+		for (int j=0;j<graph[c2u]->adj.size();j++)
+			if (graph[c2u]->adj[j]->communityId == c2Index){
 				m2 += 1;
-				graph[i]->adj[j]->communityId = cIndex;
+				graph[c2u]->adj[j]->communityId = cIndex;
 			}
+    }
 	double balanceEdges = m - m1 - m2;
 	double probNew = balanceEdges/(L*R);
 	//generate edges and their start times
+
 	if ((probNew > 1.0) || (numberOfNodes == 2)) probNew = 1;
 	if (probNew < 0.0) probNew = 0;
 	//cout << "L = " << L << ", R = " << R << ", timeToMerge = " << timeToMerge << endl << flush;
@@ -1022,19 +1041,20 @@ void mergeCommunities(int c1Index, int c2Index, int timeslot){
 		for (int j=0;j<R;j++){
 			int v = c2->nodeList[j]->nodeId;
 			if (graph[v]->endTime > -1) continue;
-			bool flag = true;
+			/*bool flag = true;
 			for (int l=0;l<graph[u]->adj.size();l++)
 				if (graph[u]->adj[l]->destId == v){
 					flag = false;
 					break;
 				}
-			if (!flag) continue;
+			if (!flag) continue;*/
 			double r = ((double) rand())/((double) RAND_MAX);
 			if (r<=probNew){
 				edge *fwd = new edge(u,v,cIndex);
 				int posV = c1->indexOfNode(v);
+
 				int startLimit = (int) floor(0.5*c1->nodeList[posV]->joinTime + 0.5*c2->nodeList[posU]->joinTime);
-				if (startLimit < timeslot){	//this can happen because of a pre-existing overlap
+				if (startLimit < timeslot){	//this can happen because of a pre-existing overlap between c1 and c2
 					//cout << "i = " << i << ", j = " << j << ", posU = " << posU << ", posV = " << posV << ", startLimit = " << startLimit << ", c1->nodeList[posV].joinTime = " << c1->nodeList[posV].joinTime << ", c2->nodeList[posU].joinTime = " << c2->nodeList[posU].joinTime <<  endl;
 					startLimit = timeslot;
 				}
@@ -1053,13 +1073,15 @@ void mergeCommunities(int c1Index, int c2Index, int timeslot){
 			}
 		}
 	}
-
+	if (maxStartTime < timeslot) cout << "MaxStartTime Issue: probNew = " << probNew << endl;
+    if (maxStartTime < timeslot) maxStartTime = timeslot;
 	c->birthTime = timeslot + timeToMerge + 1;
 	c1->deathTime = timeslot + timeToMerge;
 	c2->deathTime = timeslot + timeToMerge;
-
+    cout << "Merge community: " << maxStartTime + 1 << endl;
 	c->nextAvailableTimeSlot = maxStartTime+1;
 	N2 += 1;
+
 
 	/*cout << "End: c2s nodeList" << endl;
 	for (int i=0;i<R;i++)
@@ -1078,12 +1100,14 @@ void addNode(int timeslot){
 	PowerlawDegreeSequence z(xmin,xmax,beta1); //get community membership
 	z.run();
 	int nodeMembership = z.getDegree();
-	nodeMemberships.push_back((int)(floor(1.2*nodeMembership)));
+	//nodeMemberships.push_back((int)(floor(1.2*nodeMembership)));
+	nodeSlots.push_back(1.2*nodeMembership);
 	graph.push_back(new node(u,timeslot));
 	for (int i=0;i<eps;i++){
 		int v = rand()%(N1-1);
 		while (graph[v]->endTime != -1)
 			v = rand()%(N1-1);
+
 		edge *fwd = new edge(u,v,-2);
 		fwd->startTime = timeslot;
 		bool flag = graph[u]->addEdge(fwd);
@@ -1101,6 +1125,7 @@ void addNode(int timeslot){
 
 void deleteNode(int nodeIndex, int timeslot){
 	nodeMemberships[nodeIndex] = 0; //no future births will involve this node
+	nodeSlots[nodeIndex] = 0;
 	for (int i=0;i<graph[nodeIndex]->communities.size();i++){
 		int communityId = graph[nodeIndex]->communities[i];
 		community c = *communities[communityId];
@@ -1115,7 +1140,7 @@ void deleteNode(int nodeIndex, int timeslot){
 				c.nodeList[j]->leaveTime = timeslot;
 			c.isAvailable = false;
 			c.nextAvailableTimeSlot = -1;
-			c.deathTime = timeslot;    
+			c.deathTime = timeslot;
 		}
 	}
 	for (int i=0;i<graph[nodeIndex]->adj.size();i++){
@@ -1152,6 +1177,7 @@ void generateEvent(int timeslot){
 		}
 		return;
 	}
+
 	z = rand()%4;
 	if (z==0){
 		//draw an available community at random
@@ -1164,16 +1190,18 @@ void generateEvent(int timeslot){
 					commToDelete = i;
 			}
 		}
-		if (commToDelete != -1) deathCommunity(commToDelete,timeslot); 
-		//cout << "Deleting Community " << commToDelete << " at " << timeslot << endl;
+
+		if (commToDelete != -1) deathCommunity(commToDelete,timeslot);
+		cout << "Deleting Community " << commToDelete << " at " << timeslot << endl;
 		clock_gettime(CLOCK_MONOTONIC,&finish);
 		averageDeathTime += (finish.tv_sec - start.tv_sec) + (finish.tv_nsec - start.tv_nsec)/pow(10,9);
 		nDeaths += 1;
 	}
 	else if (z==1){
 		clock_gettime(CLOCK_MONOTONIC,&start);
-		//cout << "Birthing Community " << N2 << " at " << timeslot << endl;
+		cout << "Birthing Community " << N2 << " at " << timeslot << endl;
 		birthCommunity(timeslot);
+		cout << "Community Born " << N2 << " at " << timeslot << endl;
 		clock_gettime(CLOCK_MONOTONIC,&finish);
 		averageBirthTime += (finish.tv_sec - start.tv_sec) + (finish.tv_nsec - start.tv_nsec)/pow(10,9);
 		nBirths += 1;
@@ -1192,7 +1220,11 @@ void generateEvent(int timeslot){
 		if (commToSplit !=-1){
 			splitCommunity(commToSplit,timeslot);
 		}
-		//else cout << "Could not find suitable community to split!" << endl;
+		else{
+		int numAvailableCommunities = 0;
+            for (int i =0; i< N2; i++) if (communities[i]->isAvailable) numAvailableCommunities++;
+            cout << "Attempted split, Could not find suitable community in " << numAvailableCommunities << " to split at " << timeslot << endl;
+		}
 		clock_gettime(CLOCK_MONOTONIC,&finish);
 		averageSplitTime += (finish.tv_sec - start.tv_sec) + (finish.tv_nsec - start.tv_nsec)/pow(10,9);
 		nSplits += 1;
@@ -1224,10 +1256,17 @@ void generateEvent(int timeslot){
 		if (numCandidates >= 2){
 			mergeCommunities(comm[0],comm[1],timeslot);
 		}
+		else{
+            int numAvailableCommunities = 0;
+            for (int i =0; i< N2; i++) if (communities[i]->isAvailable) numAvailableCommunities++;
+            cout << "Attempted merge, but no suitable candidates of " << numAvailableCommunities << " at " << timeslot << endl;
+		}
 		clock_gettime(CLOCK_MONOTONIC,&finish);
 		averageMergeTime += (finish.tv_sec - start.tv_sec) + (finish.tv_nsec - start.tv_nsec)/pow(10,9);
 		nMerges += 1;
 	}
+	for (int i = 0; i < N1; i++)
+        slotsFile << timeslot << " " << i << " " << nodeSlots[i] << " " << nodeMemberships[i] << endl;
 }
 
 void randomlyPerturb(community* c, int timeslot, int commIndex){
@@ -1291,6 +1330,7 @@ void randomlyPerturb(community* c, int timeslot, int commIndex){
 
 void generateTimeslot(int timeslot){
 	double z = ((double) rand())/RAND_MAX;  //10 % probability of an event happening
+
 	for (int i=0;i<N2;i++){
 		if (communities[i]->nextAvailableTimeSlot == timeslot) communities[i]->isAvailable = true;
 		if (communities[i]->isAvailable){
@@ -1305,25 +1345,34 @@ void generateTimeslot(int timeslot){
 	if (z<=probEvent){
 		generateEvent(timeslot);
 	}
+	int numAvailableCommunities = 0;
+	for (int i = 0; i < N2; i++) if (communities[i]->isAvailable) numAvailableCommunities++;
+	cout << "Number of available communities at " << timeslot << " = " << numAvailableCommunities << endl;
 }
 /********************************************************************/
 
 
 void printGraph(){
 	ofstream myfile;
+	//myfile.open("ckbDynamicOut");
 	myfile.open("ckbDynamicGraphByNode");
 	for (int i=0;i<N1;i++){
 		myfile << "Node: " << i << endl;
 		for (int j=0;j<graph[i]->adj.size();j++){
-			myfile << "(" << graph[i]->adj[j]->destId << ", " << graph[i]->adj[j]->startTime << ", " << graph[i]->adj[j]->endTime << ", " << graph[i]->adj[j]->communityId << ")" << endl;
+			myfile << "(" << graph[i]->adj[j]->destId << ", "
+				<< graph[i]->adj[j]->startTime << ", "
+				<< ((graph[i]->adj[j]->endTime >= 0)? graph[i]->adj[j]->endTime : 2*T) << ", "
+				<< graph[i]->adj[j]->communityId << ")" << endl;
 			if (graph[i]->adj[j]->startTime <= -1 && graph[i]->adj[j]->communityId != -1) cout << "Yep, trouble " << graph[i]->adj[j]->startTime << ", " << graph[i]->adj[j]->communityId <<endl;
 		}
+
 	}
 	myfile.close();
 }
 
 void printCommunity(){
 	ofstream myfile;
+//	myfile.open("ckbDynamicCommunitiesOut");
 	myfile.open("ckbDynamicCoverByNode");
 	/*int *numNodesTouched = new int[N2];
 	for (int i=0;i<N2;i++) numNodesTouched[i] = (communodeInCommunitynities[i].nodeList).size();*/
@@ -1337,19 +1386,26 @@ void printCommunity(){
 				cout << "Trouble with " << c.originFlag << endl << flush;
 			}
 			//numNodesTouched[communityId] -= 1;
-			myfile << "(" << graph[i]->communities[j] << ", " << c.nodeList[pos]->joinTime << ", " << c.nodeList[pos]->leaveTime << ")" << endl;
+			myfile << "(" << graph[i]->communities[j] << ", "
+					<< c.nodeList[pos]->joinTime << ", "
+					<< ((c.nodeList[pos]->leaveTime >= 0)? c.nodeList[pos]->leaveTime : 2*T)
+				<< ")" << endl;
 		}
 		myfile << endl;
 	}
 	myfile.close();
 	ofstream myfile1;
+//	myfile1.open("ckbDynamicCommunitiesOut1");
 	myfile1.open("ckbDynamicCoverByCommunity");
 	/*int *numNodesTouched = new int[N2];
 	for (int i=0;i<N2;i++) numNodesTouched[i] = (communities[i].nodeList).size();*/
 	for (int i=0;i<N2;i++){
 		myfile1 << i << ":";
 		for (int j=0;j< (communities[i]->nodeList).size();j++){
-			myfile1 << "(" << (communities[i]->nodeList[j])->nodeId << ", " << (communities[i]->nodeList[j])->joinTime << ", " << (communities[i]->nodeList[j])->leaveTime << ")" << endl;
+			myfile1 << "(" << (communities[i]->nodeList[j])->nodeId
+				<< ", " << (communities[i]->nodeList[j])->joinTime << ", "
+				<< (((communities[i]->nodeList[j])->leaveTime >= 0)? (communities[i]->nodeList[j])->leaveTime : 2*T)
+				<< ")" << endl;
 		}
 		myfile1 << endl;
 	}
@@ -1366,11 +1422,12 @@ void printGraphStream(){
 			stream.push_back(update(1, i, -1, graph[i]->startTime));
 		if (graph[i]->endTime > 0)
 			stream.push_back(update(3, i, -1, graph[i]->endTime));
+
 		for (int j=0;j<(graph[i]->adj).size();j++){
 			if ((graph[i]->adj[j]->communityId == -1)||(graph[i]->adj[j]->communityId == -4))
 				continue;
 			if ((graph[i]->adj[j]->startTime > graph[i]->adj[j]->endTime) && (graph[i]->adj[j]->startTime != -1) && (graph[i]->adj[j]->endTime != -1)){
-				cout << "THIS IS A PROBLEM! " << graph[i]->adj[j]->communityId << ", " << graph[i]->adj[j]->startTime << ", " << graph[i]->adj[j]->endTime << endl << flush;
+				cout << "OH MY GOD! THIS IS A PROBLEM! " << graph[i]->adj[j]->communityId << ", " << graph[i]->adj[j]->startTime << ", " << graph[i]->adj[j]->endTime << endl << flush;
 				cout << "Edge: " << graph[i]->adj[j]->sourceId << ", " << graph[i]->adj[j]->destId << endl << flush;
 				exit(1);
 			}
@@ -1384,14 +1441,29 @@ void printGraphStream(){
 	sort(stream.begin(),stream.end(),compareUpdate);
 	ofstream myfile;
 	myfile.open("ckbDynamicStream");
-	for (int i=0;i<stream.size();i++)
-	if (stream[i].t <= T)
-		myfile << stream[i].updateType << "," << stream[i].u << "," << stream[i].v << "," << stream[i].t << endl;
+	int first = 0, second = 1;
+	while (second < stream.size()){
+        update u1 = stream[first];
+        update u2 = stream[second];
+        if (u1.u == u2.u && u1.v == u2.v && u1.t == u2.t){
+            first = second + 1;
+            second = first + 1;
+        }
+        else{
+            myfile << u1.updateType << "," << u1.u << "," << u1.v << "," << u1.t << endl;
+            first = second;
+            second = first + 1;
+        }
+	}
+	if (first < stream.size())
+        myfile << stream[first].updateType << "," << stream[first].u << "," << stream[first].v << "," << stream[first].t << endl;
 	myfile.close();
 }
 
 void printInitialGraph(){
 	ofstream myfile, myfileC;
+//	myfile.open("ckbDynamicO");
+//	myfileC.open("ckbDynamicCommunitiesO");
 	myfile.open("ckbDynamicInitialGraphEdgeList");
 	myfileC.open("ckbDynamicInitialCoverEdgeList");
 	for (int i=0;i<N1;i++){
@@ -1401,6 +1473,7 @@ void printInitialGraph(){
 				myfile << i << "\t" << graph[i]->adj[j]->destId << endl;
 			}
 		}
+
 		for (int j=0;j<graph[i]->communities.size();j++){
 			int communityId = graph[i]->communities[j];
 			community c = *communities[communityId];
@@ -1488,6 +1561,11 @@ int main(int argc, char *argv[]){
 
 	for (int t = 0; t< T;t++){
 		generateTimeslot(t);
+		/*bool isok = sanityCheck2();
+		if (!isok){
+            cout << "Sanity check 2 is false at " << t << endl;
+            exit(0);
+		}*/
 	}
 	clock_gettime(CLOCK_MONOTONIC, &finish);
 	elapsedS = (mid.tv_sec - start.tv_sec) + (mid.tv_nsec - start.tv_nsec)/pow(10,9);
@@ -1504,6 +1582,5 @@ int main(int argc, char *argv[]){
 	averageMergeTime /= nMerges;
 	averageNodeAddTime /= nAdd;
 	averageNodeDeleteTime /= nDelete;
-	cout << "#<NumberOfNodes> <ProbEvent> <Alpha> <Eps> <StaticGenerationTime> <DynamicGenerationTime>" << endl;
 	cout << N1 << "\t" << probEvent << "\t" << alpha << "\t" << eps << "\t" << elapsedS << "\t" << elapsedD << endl;
 }
